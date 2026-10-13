@@ -1,116 +1,309 @@
-import { useEffect, useState } from 'react';
-import BackupBar from './components/BackupBar.jsx';
-import LoanDialog from './components/LoanDialog.jsx';
-import LoanList from './components/LoanList.jsx';
-import SearchBar from './components/SearchBar.jsx';
-import Tabs from './components/Tabs.jsx';
-import { todayString } from './lib/dates.js';
-import { isReturned, visibleLoans } from './lib/loans.js';
-import { exportLoans, loadLoans, parseImport, saveLoans } from './lib/storage.js';
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
+import './App.css'
+import LegacyImport from './components/LegacyImport.jsx'
+import LoanForm from './components/LoanForm.jsx'
+import LoanList from './components/LoanList.jsx'
+import LoginForm from './components/LoginForm.jsx'
+import SearchBox from './components/SearchBox.jsx'
+import TabBar from './components/TabBar.jsx'
+import ThemeToggle from './components/ThemeToggle.jsx'
+import { onSessionChange, signIn, signOut } from './lib/auth.js'
+import { toIsoDate } from './lib/dateFormat.js'
+import { isLegacyImported, markLegacyImported, readLegacyLoans } from './lib/legacyImport.js'
+import {
+  SESSION_EXPIRED_MESSAGE,
+  createLoan,
+  createLoans,
+  fetchLoans,
+  updateLoan,
+} from './lib/loanRepo.js'
+import {
+  STATUS,
+  STATUS_LABEL,
+  filterLoansByFriend,
+  getLoanStatus,
+  groupLoans,
+  markReturned,
+  unmarkReturned,
+} from './lib/loanRules.js'
+import { ADD_TAB, getEmptyMessage, pickDefaultTab } from './lib/loanTabs.js'
+import { getSupabase } from './lib/supabaseClient.js'
+import { getInitialTheme, saveTheme, toggleTheme } from './lib/theme.js'
 
-// วันนี้ (ตามปฏิทิน) อัปเดตทุกนาทีและเมื่อกลับมาโฟกัสหน้า เพื่อให้สถานะเกินกำหนดถูกต้องเมื่อเปิดหน้าทิ้งข้ามเที่ยงคืน
-function useToday() {
-  const [today, setToday] = useState(todayString);
+// หน้า Loan ของเจ้าที่เข้าสู่ระบบแล้ว เก็บ state ของ Loan
+// ข้อมูลอยู่ที่ Supabase: อัปเดตหน้าจอเมื่อเขียนสำเร็จเท่านั้น ถ้าไม่สำเร็จแจ้งเป็นภาษาไทยและไม่ทิ้งข้อมูลในฟอร์ม
+function LoanManager({ onSessionExpired }) {
+  const [loans, setLoans] = useState([])
+  const [loadState, setLoadState] = useState('loading') // loading | ready | error
+  const [message, setMessage] = useState(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [editingId, setEditingId] = useState(null)
+  const [query, setQuery] = useState('')
+  const [tab, setTab] = useState(null) // null = ใช้แท็บเริ่มต้น (แท็บแรกที่มี Loan) จนกว่าเจ้าของจะเลือกเอง
+  const [returnTab, setReturnTab] = useState(null) // แท็บที่ดูอยู่ก่อนกดแก้ไข ใช้กลับมาเมื่อยกเลิก
+  const [legacy, setLegacy] = useState(null) // ข้อมูลเดิมที่รอเจ้าของตัดสินใจนำเข้า
+  const [importing, setImporting] = useState(false)
+  const [importError, setImportError] = useState(null)
+  const [importResult, setImportResult] = useState(null)
+
   useEffect(() => {
-    const refresh = () => setToday(todayString());
-    const timer = setInterval(refresh, 60 * 1000);
-    window.addEventListener('focus', refresh);
-    document.addEventListener('visibilitychange', refresh);
+    let cancelled = false
+    fetchLoans().then(({ loans: fetched, error, sessionExpired }) => {
+      if (cancelled) return
+      if (sessionExpired) {
+        onSessionExpired()
+        return
+      }
+      if (error) {
+        setMessage(error)
+        setLoadState('error')
+        return
+      }
+      setMessage(null)
+      setLoans(fetched)
+      setLoadState('ready')
+      // ถามย้ายข้อมูลเดิมเฉพาะเมื่อบัญชีนี้ยังไม่มี Loan และยังไม่เคยตัดสินใจ
+      if (fetched.length === 0 && !isLegacyImported()) {
+        const found = readLegacyLoans()
+        if (found.loans.length > 0 || found.skipped.length > 0 || found.warning) setLegacy(found)
+      }
+    })
     return () => {
-      clearInterval(timer);
-      window.removeEventListener('focus', refresh);
-      document.removeEventListener('visibilitychange', refresh);
-    };
-  }, []);
-  return today;
-}
-
-export default function App() {
-  const today = useToday();
-  const [loans, setLoans] = useState(loadLoans);
-  const [tab, setTab] = useState('outstanding');
-  const [query, setQuery] = useState('');
-  // undefined = ปิด, null = เพิ่มใหม่, อ็อบเจกต์ = แก้ไขรายการนั้น
-  const [dialogLoan, setDialogLoan] = useState(undefined);
-
-  useEffect(() => {
-    if (!saveLoans(loans)) alert('ไม่สามารถบันทึกข้อมูลลงเบราว์เซอร์ได้ กรุณาส่งออกไฟล์สำรองไว้ก่อน');
-  }, [loans]);
-
-  const shown = visibleLoans(loans, tab, query, today);
-  const outstanding = loans.filter((l) => !isReturned(l)).length;
-  const counts = { outstanding, history: loans.length - outstanding };
-
-  const updateLoan = (id, changes) =>
-    setLoans((all) => all.map((l) => (l.id === id ? { ...l, ...changes } : l)));
-
-  const markReturned = (id) => updateLoan(id, { returnedDate: today });
-  const undoReturn = (id) => updateLoan(id, { returnedDate: null });
-
-  const removeLoan = (loan) => {
-    const msg = `ลบรายการ "${loan.item}" ของ ${loan.borrower} ใช่หรือไม่?\nใช้เฉพาะกรณีบันทึกผิด หากเพื่อนคืนของแล้วให้กด "คืนแล้ว" แทน`;
-    if (confirm(msg)) setLoans((all) => all.filter((l) => l.id !== loan.id));
-  };
-
-  const saveDialog = (values) => {
-    if (dialogLoan) updateLoan(dialogLoan.id, values);
-    else setLoans((all) => [...all, { id: crypto.randomUUID(), ...values, returnedDate: null }]);
-    setDialogLoan(undefined);
-  };
-
-  const importBackup = (text) => {
-    try {
-      const data = parseImport(text);
-      if (!confirm(`นำเข้า ${data.length} รายการ และแทนที่ข้อมูลปัจจุบันทั้งหมดใช่หรือไม่?`)) return;
-      setLoans(data);
-    } catch {
-      alert('ไฟล์ไม่ถูกต้อง ไม่สามารถนำเข้าได้');
+      cancelled = true
     }
-  };
+  }, [reloadKey, onSessionExpired])
 
-  const exportBackup = () => {
-    const url = URL.createObjectURL(new Blob([exportLoans(loans)], { type: 'application/json' }));
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `borrow-buddy-${today}.json`;
-    document.body.append(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
+  const handleRetry = () => {
+    setLoadState('loading')
+    setReloadKey((k) => k + 1)
+  }
+
+  const today = toIsoDate(new Date())
+  const editingLoan = loans.find((loan) => loan.id === editingId) ?? null
+  const visibleLoans = filterLoansByFriend(loans, query)
+  const groups = groupLoans(visibleLoans, today)
+  const activeTab = tab ?? pickDefaultTab(groups)
+
+  // คืน Loan ที่บันทึกแล้ว หรือ null เมื่อไม่สำเร็จ ผลลัพธ์จาก loanRepo ทุกตัวผ่านฟังก์ชันนี้
+  const applyResult = (result) => {
+    if (result.sessionExpired) {
+      onSessionExpired()
+      return null
+    }
+    if (result.error) {
+      setMessage(result.error)
+      return null
+    }
+    setMessage(null)
+    const saved = result.loan
+    setLoans((prev) =>
+      prev.some((l) => l.id === saved.id)
+        ? prev.map((l) => (l.id === saved.id ? saved : l))
+        : [...prev, saved],
+    )
+    return saved
+  }
+
+  // Loan ที่ยังไม่มี id คือเพิ่มใหม่ ถ้ามี id คือแก้ไขรายการเดิม
+  // สำเร็จแล้วไปแท็บตามสถานะของ Loan ที่บันทึก คืน true/false ให้ฟอร์มรู้ว่าล้างข้อมูลได้หรือไม่
+  const handleSave = async (loan) => {
+    const saved = applyResult(loan.id ? await updateLoan(loan) : await createLoan(loan))
+    if (!saved) return false
+    setEditingId(null)
+    setReturnTab(null)
+    setTab(getLoanStatus(saved, today))
+    return true
+  }
+
+  const handleEdit = (loan) => {
+    setReturnTab(activeTab)
+    setEditingId(loan.id)
+    setTab(ADD_TAB)
+  }
+
+  const handleCancelEdit = () => {
+    setEditingId(null)
+    setTab(returnTab)
+    setReturnTab(null)
+  }
+
+  const handleMarkReturned = async (loan, returnedDate) => {
+    applyResult(await updateLoan(markReturned(loan, today, returnedDate)))
+  }
+
+  const handleUnmarkReturned = async (loan) => {
+    applyResult(await updateLoan(unmarkReturned(loan)))
+  }
+
+  const handleImport = async () => {
+    setImporting(true)
+    setImportError(null)
+    const result = await createLoans(legacy.loans)
+    setImporting(false)
+    if (result.sessionExpired) {
+      onSessionExpired()
+      return
+    }
+    if (result.error) {
+      // นำเข้าไม่สำเร็จ: ไม่ทำเครื่องหมายว่าย้ายแล้ว ข้อมูลเดิมยังอยู่ครบและลองใหม่ได้
+      setImportError(result.error)
+      return
+    }
+    markLegacyImported()
+    setLoans((prev) => [...prev, ...result.loans])
+    setImportResult({ imported: result.loans.length, skipped: legacy.skipped })
+    setLegacy(null)
+  }
+
+  // ไม่นำเข้า/ปิดแผง: ทำเครื่องหมายว่าตัดสินใจแล้ว จะไม่ถามอีก (ข้อมูลเดิมในเบราว์เซอร์ไม่ถูกลบ)
+  const handleDismissImport = () => {
+    markLegacyImported()
+    setLegacy(null)
+    setImportResult(null)
+    setImportError(null)
+  }
+
+  if (loadState === 'loading') return <p>กำลังโหลดรายการ...</p>
+
+  if (loadState === 'error') {
+    return (
+      <>
+        <p role="alert">{message}</p>
+        <div className="form-actions">
+          <button type="button" onClick={handleRetry}>
+            ลองใหม่
+          </button>
+        </div>
+      </>
+    )
+  }
 
   return (
-    <main className="mx-auto max-w-3xl px-4 pb-12 pt-6">
-      <header>
-        <h1 className="text-3xl font-bold">Borrow Buddy</h1>
-        <p className="mb-5 mt-1 text-gray-500">บันทึกของที่ให้เพื่อนยืม</p>
-      </header>
-
-      <SearchBar query={query} onQueryChange={setQuery} onAdd={() => setDialogLoan(null)} />
-      <Tabs tab={tab} counts={counts} onChange={setTab} />
-      <div id="tabpanel" role="tabpanel" aria-labelledby={`tab-${tab}`}>
-        <LoanList
-          loans={shown}
-          tab={tab}
-          query={query}
-          today={today}
-          onReturn={markReturned}
-          onUndoReturn={undoReturn}
-          onEdit={setDialogLoan}
-          onRemove={removeLoan}
-        />
+    <>
+      {message && <p role="alert">{message}</p>}
+      <LegacyImport
+        legacy={legacy}
+        result={importResult}
+        busy={importing}
+        error={importError}
+        onImport={handleImport}
+        onDismiss={handleDismissImport}
+      />
+      <TabBar
+        tabs={[
+          ...[STATUS.OVERDUE, STATUS.OUTSTANDING, STATUS.RETURNED].map((status) => ({
+            key: status,
+            label: STATUS_LABEL[status],
+            tone: status,
+            count: groups[status].length,
+          })),
+          { key: ADD_TAB, label: editingLoan ? 'แก้ไขการยืม' : 'เพิ่มการยืม', tone: 'add' },
+        ]}
+        active={activeTab}
+        onChange={setTab}
+      />
+      <div role="tabpanel" id="tab-panel" aria-labelledby={`tab-${activeTab}`} className="tab-panel">
+        {activeTab === ADD_TAB ? (
+          <LoanForm
+            key={editingLoan?.id ?? 'new'}
+            today={today}
+            editingLoan={editingLoan}
+            onSave={handleSave}
+            onCancelEdit={handleCancelEdit}
+          />
+        ) : (
+          <>
+            <SearchBox value={query} onChange={setQuery} />
+            <LoanList
+              loans={visibleLoans}
+              status={activeTab}
+              today={today}
+              emptyMessage={getEmptyMessage(activeTab, query.trim() !== '')}
+              onMarkReturned={handleMarkReturned}
+              onUnmarkReturned={handleUnmarkReturned}
+              onEdit={handleEdit}
+            />
+          </>
+        )}
       </div>
-      <BackupBar onExport={exportBackup} onImport={importBackup} />
-
-      {dialogLoan !== undefined && (
-        <LoanDialog
-          key={dialogLoan?.id ?? 'new'}
-          loan={dialogLoan}
-          today={today}
-          onSave={saveDialog}
-          onClose={() => setDialogLoan(undefined)}
-        />
-      )}
-    </main>
-  );
+    </>
+  )
 }
+
+function readConfigError() {
+  try {
+    getSupabase()
+    return null
+  } catch (e) {
+    return e.message
+  }
+}
+
+function App() {
+  const [configError] = useState(readConfigError)
+  // session: undefined = กำลังตรวจสอบ, null = ยังไม่เข้าสู่ระบบ, object = เข้าสู่ระบบแล้ว
+  const [session, setSession] = useState(configError ? null : undefined)
+  const [notice, setNotice] = useState(null)
+  const [theme, setTheme] = useState(() =>
+    getInitialTheme(undefined, window.matchMedia('(prefers-color-scheme: dark)').matches),
+  )
+
+  // ตั้งธีมให้ <html> ก่อนวาดหน้าจอ เพื่อไม่ให้จอกะพริบ
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme
+  }, [theme])
+
+  // ติดตามสถานะ session (ค่าเริ่มต้นตอนเปิดหน้า, เข้า/ออกจากระบบ, session หมดอายุ)
+  useEffect(() => {
+    if (configError) return undefined
+    return onSessionChange(setSession)
+  }, [configError])
+
+  const handleToggleTheme = () => {
+    const next = toggleTheme(theme)
+    setTheme(next)
+    saveTheme(next)
+  }
+
+  // คืนข้อความผิดพลาดภาษาไทย หรือ null เมื่อสำเร็จ (session จะอัปเดตผ่าน onSessionChange)
+  const handleSignIn = async (email, password) => {
+    setNotice(null)
+    const { error } = await signIn(email, password)
+    return error
+  }
+
+  const handleSignOut = async () => {
+    const { error } = await signOut()
+    if (error) setNotice(error)
+  }
+
+  // session หมดอายุ/ไม่มีสิทธิ์: กลับหน้าเข้าสู่ระบบพร้อมแจ้งเตือน
+  const handleSessionExpired = useCallback(async () => {
+    setNotice(SESSION_EXPIRED_MESSAGE)
+    await signOut()
+    setSession(null)
+  }, [])
+
+  return (
+    <main>
+      <header className="app-header">
+        <h1>Borrow Buddy</h1>
+        <div className="header-actions">
+          <ThemeToggle theme={theme} onToggle={handleToggleTheme} />
+          {session && (
+            <button type="button" onClick={handleSignOut}>
+              ออกจากระบบ
+            </button>
+          )}
+        </div>
+      </header>
+      {configError && <p role="alert">{configError}</p>}
+      {notice && <p role="alert">{notice}</p>}
+      {!configError && session === undefined && <p>กำลังตรวจสอบการเข้าสู่ระบบ...</p>}
+      {!configError && session === null && <LoginForm onSignIn={handleSignIn} />}
+      {session && <LoanManager key={session.user.id} onSessionExpired={handleSessionExpired} />}
+    </main>
+  )
+}
+
+export default App

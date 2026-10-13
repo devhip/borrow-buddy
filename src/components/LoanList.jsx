@@ -1,19 +1,32 @@
-import LoanCard from './LoanCard.jsx';
+import { groupLoans } from '../lib/loanRules.js'
+import LoanItem from './LoanItem.jsx'
 
-function emptyMessage(tab, query) {
-  if (query.trim()) return 'ไม่พบรายการที่ค้นหา';
-  return tab === 'outstanding' ? 'ไม่มีของที่ถูกยืมอยู่ตอนนี้' : 'ยังไม่มีประวัติการคืน';
-}
+// แสดงรายการของสถานะที่เลือก (แท็บ) เรียงกำหนดคืนใกล้สุดก่อนจาก groupLoans
+export default function LoanList({
+  loans,
+  status,
+  today,
+  emptyMessage,
+  onMarkReturned,
+  onUnmarkReturned,
+  onEdit,
+}) {
+  const items = groupLoans(loans, today)[status]
 
-export default function LoanList({ loans, tab, query, today, ...actions }) {
-  if (loans.length === 0) {
-    return <p className="py-8 text-center text-gray-500">{emptyMessage(tab, query)}</p>;
-  }
+  if (items.length === 0) return <p className="empty-state">{emptyMessage}</p>
+
   return (
-    <ul className="grid gap-3">
-      {loans.map((loan) => (
-        <LoanCard key={loan.id} loan={loan} today={today} {...actions} />
+    <ul className="loan-list">
+      {items.map((loan) => (
+        <LoanItem
+          key={loan.id}
+          loan={loan}
+          today={today}
+          onMarkReturned={onMarkReturned}
+          onUnmarkReturned={onUnmarkReturned}
+          onEdit={onEdit}
+        />
       ))}
     </ul>
-  );
+  )
 }
