@@ -8,7 +8,25 @@ import { todayString } from './lib/dates.js';
 import { isReturned, visibleLoans } from './lib/loans.js';
 import { exportLoans, loadLoans, parseImport, saveLoans } from './lib/storage.js';
 
+// วันนี้ (ตามปฏิทิน) อัปเดตทุกนาทีและเมื่อกลับมาโฟกัสหน้า เพื่อให้สถานะเกินกำหนดถูกต้องเมื่อเปิดหน้าทิ้งข้ามเที่ยงคืน
+function useToday() {
+  const [today, setToday] = useState(todayString);
+  useEffect(() => {
+    const refresh = () => setToday(todayString());
+    const timer = setInterval(refresh, 60 * 1000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, []);
+  return today;
+}
+
 export default function App() {
+  const today = useToday();
   const [loans, setLoans] = useState(loadLoans);
   const [tab, setTab] = useState('outstanding');
   const [query, setQuery] = useState('');
@@ -19,7 +37,6 @@ export default function App() {
     if (!saveLoans(loans)) alert('ไม่สามารถบันทึกข้อมูลลงเบราว์เซอร์ได้ กรุณาส่งออกไฟล์สำรองไว้ก่อน');
   }, [loans]);
 
-  const today = todayString();
   const shown = visibleLoans(loans, tab, query, today);
   const outstanding = loans.filter((l) => !isReturned(l)).length;
   const counts = { outstanding, history: loans.length - outstanding };
