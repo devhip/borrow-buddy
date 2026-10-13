@@ -11,6 +11,8 @@ export default function Tabs({ tab, counts, onChange }) {
         return (
           <button
             key={t.id}
+            id={`tab-${t.id}`}
+            aria-controls="tabpanel"
             type="button"
             role="tab"
             aria-selected={active}

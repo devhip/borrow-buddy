@@ -88,16 +88,18 @@ export default function App() {
 
       <SearchBar query={query} onQueryChange={setQuery} onAdd={() => setDialogLoan(null)} />
       <Tabs tab={tab} counts={counts} onChange={setTab} />
-      <LoanList
-        loans={shown}
-        tab={tab}
-        query={query}
-        today={today}
-        onReturn={markReturned}
-        onUndoReturn={undoReturn}
-        onEdit={setDialogLoan}
-        onRemove={removeLoan}
-      />
+      <div id="tabpanel" role="tabpanel" aria-labelledby={`tab-${tab}`}>
+        <LoanList
+          loans={shown}
+          tab={tab}
+          query={query}
+          today={today}
+          onReturn={markReturned}
+          onUndoReturn={undoReturn}
+          onEdit={setDialogLoan}
+          onRemove={removeLoan}
+        />
+      </div>
       <BackupBar onExport={exportBackup} onImport={importBackup} />
 
       {dialogLoan !== undefined && (
